@@ -1,4 +1,5 @@
 import ast
+import re
 
 import numpy as np
 import pandas as pd
@@ -35,14 +36,40 @@ def process_features(column):
     return np.nan
 
 
+def convert_persian_digits(text):
+    persian_digits = "۰۱۲۳۴۵۶۷۸۹"
+    english_digits = "0123456789"
+    translation_table = str.maketrans(persian_digits, english_digits)
+    return text.translate(translation_table)
+
+
+def parse_floor(value):
+    if isinstance(value, int):
+        return value, None
+
+    value = convert_persian_digits(str(value))
+    match = re.match(r"(\d+) از (\d+)", value)
+
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    elif "زیرهمکف" in value:
+        match = re.search(r"\d+", value)
+        return -1, int(match.group()) if match else None
+    elif "همکف" in value:
+        match = re.search(r"\d+", value)
+        return (0, int(match.group())) if match else (0, None)
+
+    return None, None
+
+
 def format_million_billion(x):
     """Converts large numbers to M (Million) or B (Billion)."""
     if x >= 1e9:
-        return f"{x / 1e9:.2f}B"
+        return f"{x / 1e9:.1f}B"
     elif x >= 1e6:
-        return f"{x / 1e6:.2f}M"
+        return f"{x / 1e6:.1f}M"
     else:
-        return f"{x:.2f}"
+        return f"{x:.1f}"
 
 
 def process_data(df):
@@ -50,13 +77,43 @@ def process_data(df):
         lambda x: pd.Series(extract_lat_lon(x))
     )
 
-    df.drop(columns=["price", "location"], inplace=True)
+    features_df = df["features"].apply(lambda x: pd.Series(process_features(x)))
+    features_df.replace({"ندارد": False}, inplace=True)
+    features_df[["elevator", "parking", "warehouse", "balcony"]] = features_df[
+        ["elevator", "parking", "warehouse", "balcony"]
+    ].replace({"": True})
+    features_df["are_images_valid"] = (
+        features_df["are_images_valid"].replace({"بله": True}).fillna("False")
+    )
+    features_df["production_year"] = (
+        features_df["production_year"].replace({"قبل از ۱۳۷۰": "1369"}).astype(int)
+    )
+    features_df["rooms"] = features_df["rooms"].replace({"+۴": "5"}).astype(int)
+    features_df[["floor_number", "total_floors"]] = features_df["floor"].apply(
+        lambda x: pd.Series(parse_floor(x))
+    )
+    features_df.drop(columns="floor", inplace=True)
+
     df = pd.concat(
-        [df, df["features"].apply(lambda x: pd.Series(process_features(x)))],
+        [
+            df.drop(
+                columns=[
+                    "_id",
+                    "price",
+                    "location",
+                    "features",
+                    "brand_model",
+                    "gender",
+                    "originality",
+                    "status",
+                    "credit",
+                    "rent",
+                ]
+            ),
+            features_df,
+        ],
         axis=1,
     )
-    df.drop(columns=["features"], inplace=True)
-
     df["price_h"] = df["price"].apply(format_million_billion)
     df["unit_price_h"] = df["unit_price"].apply(format_million_billion)
 
